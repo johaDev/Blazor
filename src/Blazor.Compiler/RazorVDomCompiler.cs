@@ -8,8 +8,8 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Razor.Language;
-using System.Reflection;
 using Microsoft.CodeAnalysis.Emit;
+using Blazor.Compiler;
 
 namespace RazorRenderer
 {
@@ -54,8 +54,6 @@ namespace RazorRenderer
                         classNode.BaseType = (string)codeDoc.Items["DetectedBaseClass"];
                     }
 
-                    AddIComponentRazorViewFactoryImplementation(classNode);
-
                     var layoutProperty = new CSharpStatementIRNode
                     {
                         Parent = classNode,
@@ -78,6 +76,7 @@ namespace RazorRenderer
 
             Log("Compiling C#...");
             var modelAssemblyRefs = referenceAssemblies
+                .Concat(ProjectReferenceUtil.FindReferencedAssemblies(rootDir, OptimizationLevel.Debug))
                 .Select(a => MetadataReference.CreateFromFile(Path.GetFullPath(a)))
                 .Cast<MetadataReference>()
                 .ToList();
@@ -101,37 +100,6 @@ namespace RazorRenderer
                 Console.WriteLine(message);
 #pragma warning restore CS0162 // Unreachable code detected
             }
-        }
-
-        private static void AddIComponentRazorViewFactoryImplementation(ClassDeclarationIRNode classNode)
-        {
-            // The Activator.CreateInstance feature that I added to the DNA runtime is very basic and doesn't
-            // actually invoke the default constructor of the type being created. It just allocates memory for
-            // the instance and returns it, without having run any constructor. This could be confusing if you
-            // put constructor logic (such as field initializers) in your Razor page, given that we instantiate
-            // it using Activator.CreateInstance.
-            // As a workaround (without actually adding constructor support to Activator.CreateInstance, which
-            // would be nontrivial), the Razor views privately implement an interface IComponentRazorViewFactory
-            // that can return new instances of their own type. We can then just call this with normal .NET code.
-            // This means we allocate memory for two instances of the view even though we're only using one,
-            // but it's not going to matter much as the first instance will just be released to GC immediately.
-            if (classNode.Interfaces == null)
-            {
-                classNode.Interfaces = new List<string>();
-            }
-            classNode.Interfaces.Add(typeof(IRazorComponentFactory).FullName);
-            var methodStatement = new CSharpStatementIRNode { Parent = classNode, Source = null };
-            classNode.Children.Add(methodStatement);
-            methodStatement.Children.Add(new RazorIRToken
-            {
-                Kind = RazorIRToken.TokenKind.CSharp,
-                Parent = classNode,
-                Content = $@"
-                    {typeof(RazorComponent).FullName} {typeof(IRazorComponentFactory).FullName}.{nameof(IRazorComponentFactory.Instantiate)}()
-                    {{
-                        return new {classNode.Name}();
-                    }}"
-            });
         }
 
         static IList<SyntaxTree> GetSyntaxTrees(RazorEngine engine, string rootDir, string[] filenames)
@@ -159,7 +127,7 @@ namespace RazorRenderer
                     "System",
                     "System.Collections.Generic",
                     "System.Linq",
-                    "System.Net.Http",
+                    //"System.Net.Http",
                     "System.Threading.Tasks",
                     "Blazor.Util",
                 };
@@ -303,47 +271,15 @@ namespace RazorRenderer
             return foundItems;
         }
 
-        static string AssemblyLocation(string assemblyName)
-        {
-            return AssemblyLocation(Assembly.Load(new AssemblyName(assemblyName)));
-        }
-
-        static string AssemblyLocation(Type containedType)
-        {
-            return AssemblyLocation(containedType.GetTypeInfo().Assembly);
-        }
-
-        static string AssemblyLocation(Assembly assembly)
-        {
-            var locationProperty = typeof(Assembly).GetRuntimeProperty("Location");
-            return (string)locationProperty.GetValue(assembly);
-        }
-
         static void CompileToFile(IList<SyntaxTree> syntaxTrees, IList<MetadataReference> assemblyReferences, string outputAssemblyName, Stream outputStream, Stream pdbStream)
         {
-            var standardReferencePaths = new[]
-            {
-                AssemblyLocation("mscorlib"),
-                AssemblyLocation(typeof(object)), // CoreLib
-                AssemblyLocation("System.Console"),
-                AssemblyLocation("System.Collections"),
-                AssemblyLocation("System.Linq"),
-                AssemblyLocation("System.Runtime"),
-                AssemblyLocation("System.Threading.Tasks"),
-                AssemblyLocation("System.Net.Http"),
-                AssemblyLocation("System.Private.Uri"),
-                AssemblyLocation(typeof(RazorComponent)), // Blazor
-            };
-            var allReferences = assemblyReferences
-                .Concat(standardReferencePaths.Select(assemblyLocation => MetadataReference.CreateFromFile(assemblyLocation)))
-                .ToList();
-
             var compilationOptions = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
-                .WithOptimizationLevel(OptimizationLevel.Debug);
+                .WithOptimizationLevel(OptimizationLevel.Debug)
+                .WithAssemblyIdentityComparer(DesktopAssemblyIdentityComparer.Default);
 
             var compilation = CSharpCompilation.Create(outputAssemblyName,
                 syntaxTrees: syntaxTrees,
-                references: allReferences,
+                references: assemblyReferences,
                 options: compilationOptions);
 
             var errors = compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error);

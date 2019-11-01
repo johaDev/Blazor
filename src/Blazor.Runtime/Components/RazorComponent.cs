@@ -1,48 +1,39 @@
 ﻿using Blazor.VirtualDom;
 using System;
-using System.IO;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Linq;
 using Blazor.Routing;
 using Blazor.Runtime.Components;
+using Blazor.Runtime.Interop;
 
 namespace Blazor.Components
 {
     public abstract class RazorComponent : Component
     {
+        private static IDictionary<string, Type> cshtmlFilenameToTypeCache
+            = new Dictionary<string, Type>();
+
         public static Component Instantiate(string cshtmlFileName, BlazorContext context)
         {
-            var razorViewClassName = GetViewClassName(".", cshtmlFileName);
-            var viewTypeName = $"Views.{razorViewClassName}";
-            Type viewType;
-
-            if (Router.ViewAssemblies == null)
-            {
-                // In DNA, we can search across all loaded assemblies
-                viewType = Type.GetType(viewTypeName);
-            }
-            else
-            {
-                // On the server, need to explicitly walk through the supplied list of assemblies
-                viewType = Router.ViewAssemblies.Select(a => a.GetType(viewTypeName)).Where(t => t != null).FirstOrDefault();
-            }
-
-            // To ensure that the constructor actually runs, use Instantiate from the IComponentRazorViewFactory interface.
-            // For more info on why this is needed, see the comments about it in AddIComponentRazorViewFactoryImplementation
-            // in the RazorRenderer project.
-            var instance = ((IRazorComponentFactory)Activator.CreateInstance(viewType)).Instantiate();
+            var viewType = GetTypeForCompiledRazorFile(cshtmlFileName);
+            var instance = (RazorComponent)Activator.CreateInstance(viewType);
             instance.Context = context;
             return instance;
         }
 
         public static string GetViewClassName(string rootDir, string cshtmlFilename)
         {
-            cshtmlFilename = cshtmlFilename.Replace('/', Path.DirectorySeparatorChar);
+            rootDir = rootDir
+                .Replace('\\', BlazorPath.DirectorySeparatorChar)
+                .Replace('/', BlazorPath.DirectorySeparatorChar);
+            cshtmlFilename = cshtmlFilename
+                .Replace('\\', BlazorPath.DirectorySeparatorChar)
+                .Replace('/', BlazorPath.DirectorySeparatorChar);
 
-            if (!rootDir.EndsWith(Path.DirectorySeparatorChar.ToString()))
+            if (!rootDir.EndsWith(BlazorPath.DirectorySeparatorChar.ToString()))
             {
-                rootDir += Path.DirectorySeparatorChar;
+                rootDir += BlazorPath.DirectorySeparatorChar;
             }
 
             if (!cshtmlFilename.StartsWith(rootDir))
@@ -55,7 +46,7 @@ namespace Blazor.Components
             // times they are based on type names. It's all very delicate right now.
 
             var relativePath = cshtmlFilename.Substring(rootDir.Length);
-            return relativePath.Replace(Path.DirectorySeparatorChar, '_').Replace('.', '_').ToLowerInvariant();
+            return relativePath.Replace(BlazorPath.DirectorySeparatorChar, '_').Replace('.', '_').ToLowerInvariant();
         }
 
         protected override void RenderVirtualDom()
@@ -68,6 +59,36 @@ namespace Blazor.Components
         protected override void ReceiveParameters(IDictionary<string, object> parameters)
         {
             // Subclasses may optionally override this
+        }
+
+        private static Type GetTypeForCompiledRazorFile(string cshtmlFilename)
+        {
+            lock (cshtmlFilenameToTypeCache)
+            {
+                if (!cshtmlFilenameToTypeCache.ContainsKey(cshtmlFilename))
+                {
+                    cshtmlFilenameToTypeCache[cshtmlFilename] = FindTypeForCompiledRazorFile(cshtmlFilename);
+                }
+
+                return cshtmlFilenameToTypeCache[cshtmlFilename];
+            }
+        }
+
+        private static Type FindTypeForCompiledRazorFile(string cshtmlFileName)
+        {
+            if (Router.ViewAssemblies == null)
+            {
+                throw new InvalidOperationException($"Could not instantiate component {cshtmlFileName} because {nameof(Router)}.{nameof(Router.ViewAssemblies)} is not yet populated.");
+            }
+
+            var viewTypeName = $"Views.{GetViewClassName(".", cshtmlFileName)}";
+            var viewType = Router.ViewAssemblies
+                .Select(asm => Type.GetType(
+                    System.Reflection.Assembly.CreateQualifiedName(asm.FullName, viewTypeName)))
+                .FirstOrDefault(type => type != null);
+
+            return viewType
+                ?? throw new ArgumentException($"Could not locate type for component {cshtmlFileName} in any registered views assembly.");
         }
 
         #region "Callback and binding helpers"
@@ -208,5 +229,11 @@ namespace Blazor.Components
         // This is not really used, but simply has to exist so that the Razor tooling is willing to regard
         // Blazor.Components.RazorComponent as a valid base class. This would probably go away if updating
         // to work using newer Razor tooling.
+
+        public virtual Task ExecuteAsync()
+        {
+            // This method exists only because Razor tooling shows a warning otherwise
+            throw new NotImplementedException();
+        }
     }
 }

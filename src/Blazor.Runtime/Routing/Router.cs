@@ -1,7 +1,9 @@
 ﻿using Blazor.Components;
 using Blazor.Runtime.Components;
+using Blazor.Runtime.Interop;
+using System;
 using System.Collections.Generic;
-using System.IO;
+using System.Linq;
 using System.Reflection;
 
 namespace Blazor.Routing
@@ -12,6 +14,14 @@ namespace Blazor.Routing
         private static string _currentPageComponentPath;
         private static Component _currentPageComponent;
         public static IEnumerable<Assembly> ViewAssemblies;
+
+        public static void SetViewAssemblies(string assemblyNamesCommaSeparated)
+        {
+            ViewAssemblies = assemblyNamesCommaSeparated
+                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(name => Assembly.Load(new AssemblyName(name)))
+                .ToArray();
+        }
 
         public static void MountInElement(string selector)
         {
@@ -46,8 +56,7 @@ namespace Blazor.Routing
             {
                 url = url + "Index";
             }
-            
-            return $".{url.Replace('/', Path.DirectorySeparatorChar)}.cshtml";
+            return $".{url.Replace('/', BlazorPath.DirectorySeparatorChar)}.cshtml";
         }
     }
 }

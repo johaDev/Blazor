@@ -9,7 +9,7 @@ namespace Blazor.Interop
 {
     public static class Components
     {
-        public static int InstantiateComponent(string descriptor)
+        public static string InstantiateComponent(string descriptor)
         {
             // This code path is followed for invocations from the JS side during client-side execution
             var parsed = MiniJSON.Json.Deserialize(descriptor) as Dictionary<string, object>;
@@ -17,8 +17,13 @@ namespace Blazor.Interop
             var parentComponentRef = (int)parsed["parentComponentRef"];
             var vdomItemIndex = (int)parsed["vdomItemIndex"];
             var parentComponent = Component.FindById(parentComponentRef);
+            if (parentComponent == null)
+            {
+                throw new ArgumentException($"Cannot find any component with reference {parentComponentRef}. Maybe it was garbage-collected already.");
+            }
+
             var newComponent = InstantiateAndMountComponent(elementRef, parentComponent, vdomItemIndex);
-            return newComponent.Id;
+            return newComponent.Id.ToString();
         }
 
         public static Component InstantiateAndMountComponent(string elementRef, Component parentComponent, int vdomItemIndex)
